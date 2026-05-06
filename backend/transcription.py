@@ -54,7 +54,42 @@ def _extract_video_id(url: str) -> Optional[str]:
 
 
 def _try_yt_subtitles(url: str, work_dir: Path) -> List[dict]:
-    """Pobiera napisy przez Innertube API (wewnętrzne API YouTube, bez logowania)."""
+    """Pobiera napisy — próbuje youtube-transcript-api, potem Innertube."""
+    segs = _try_transcript_api(url)
+    if segs:
+        return segs
+    return _try_innertube(url)
+
+
+def _try_transcript_api(url: str) -> List[dict]:
+    """youtube-transcript-api — działa lokalnie, blokowane na serwerach DC."""
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        video_id = _extract_video_id(url)
+        if not video_id:
+            return []
+        api = YouTubeTranscriptApi()
+        for lang in ("pl", "en", None):
+            try:
+                tl = api.list(video_id)
+                t = tl.find_transcript([lang]) if lang else next(iter(tl))
+                fetched = t.fetch()
+                segs = []
+                for s in fetched:
+                    text = str(s.text).strip()
+                    if text:
+                        segs.append({"start": float(s.start), "end": float(s.start + s.duration), "text": text})
+                if segs:
+                    return segs
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.debug("youtube-transcript-api błąd: %s", exc)
+    return []
+
+
+def _try_innertube(url: str) -> List[dict]:
+    """Innertube API — wewnętrzne API YouTube, jako fallback."""
     import json as _json, urllib.request, urllib.error, html, re as _re
 
     video_id = _extract_video_id(url)

@@ -16,6 +16,9 @@ from pydantic import BaseModel
 from models import AnalysisStatus, create_analysis, get_analysis, list_analyses
 from pipeline import run_pipeline
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
