@@ -88,17 +88,37 @@ async def run_pipeline(session_id: str, openai_api_key: str) -> None:
 
 
 async def _fetch_meta(url: str) -> tuple[str, str]:
-    """Zwraca (video_id, title) przez yt-dlp bez pobierania."""
-    import yt_dlp
+    """Zwraca (video_id, title) przez YouTube Data API v3."""
+    import os, urllib.request, json as _json, re
 
-    def _run():
-        ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return info.get("id", ""), info.get("title", "Film bez tytułu")
+    # Wyciągnij video_id z URL
+    m = re.search(r"(?:v=|youtu\.be/|shorts/)([A-Za-z0-9_-]{11})", url)
+    if not m:
+        return "", "Film bez tytułu"
+    video_id = m.group(1)
 
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _run)
+    api_key = os.getenv("YOUTUBE_API_KEY", "")
+    if not api_key:
+        return video_id, "Film bez tytułu"
+
+    try:
+        meta_url = (
+            "https://www.googleapis.com/youtube/v3/videos"
+            f"?part=snippet&id={video_id}&key={api_key}"
+        )
+        loop = asyncio.get_event_loop()
+
+        def _get():
+            with urllib.request.urlopen(meta_url, timeout=10) as r:
+                data = _json.loads(r.read())
+            items = data.get("items", [])
+            if items:
+                return video_id, items[0]["snippet"]["title"]
+            return video_id, "Film bez tytułu"
+
+        return await loop.run_in_executor(None, _get)
+    except Exception:
+        return video_id, "Film bez tytułu"
 
 
 def _update(analysis: Analysis, status: AnalysisStatus, msg: str) -> None:
