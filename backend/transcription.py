@@ -41,43 +41,58 @@ def fetch_transcript(
     return []
 
 
+def _extract_video_id(url: str) -> Optional[str]:
+    import re
+    patterns = [
+        r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})",
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+
 def _try_yt_subtitles(url: str, work_dir: Path) -> List[dict]:
+    """Pobiera napisy przez youtube-transcript-api (nie wymaga logowania)."""
     try:
-        import yt_dlp
+        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
 
-        ydl_opts = {
-            "skip_download": True,
-            "writesubtitles": True,
-            "writeautomaticsub": True,
-            "subtitleslangs": ["pl", "en"],
-            "subtitlesformat": "vtt",
-            "outtmpl": str(work_dir / "%(id)s.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            video_id = info.get("id", "")
+        video_id = _extract_video_id(url)
+        if not video_id:
+            return []
 
-        for lang in ("pl", "en"):
-            for suffix in (f".{lang}.vtt", f".{lang}-auto.vtt", ".pl.vtt", ".en.vtt"):
-                vtt = work_dir / f"{video_id}{suffix}"
-                if vtt.exists():
-                    segs = _parse_vtt(vtt)
-                    vtt.unlink(missing_ok=True)
-                    if segs:
-                        return segs
+        # Próbuj kolejno: pl, en, cokolwiek dostępne
+        transcript = None
+        for lang in (["pl"], ["en"], None):
+            try:
+                if lang:
+                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=lang)
+                else:
+                    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                    t = next(iter(transcript_list), None)
+                    if t:
+                        transcript = t.fetch()
+                if transcript:
+                    break
+            except Exception:
+                continue
 
-        # Szukaj dowolnego vtt
-        for vtt in work_dir.glob(f"{video_id}*.vtt"):
-            segs = _parse_vtt(vtt)
-            vtt.unlink(missing_ok=True)
-            if segs:
-                return segs
+        if not transcript:
+            return []
+
+        segs = []
+        for item in transcript:
+            start = float(item.get("start", 0))
+            duration = float(item.get("duration", 1))
+            text = str(item.get("text", "")).strip()
+            if text:
+                segs.append({"start": start, "end": start + duration, "text": text})
+        return segs
 
     except Exception as exc:
-        logger.debug("YT napisy niedostępne: %s", exc)
-    return []
+        logger.debug("youtube-transcript-api niedostępne: %s", exc)
+        return []
 
 
 def _parse_vtt(path: Path) -> List[dict]:
