@@ -54,56 +54,91 @@ def _extract_video_id(url: str) -> Optional[str]:
 
 
 def _try_yt_subtitles(url: str, work_dir: Path) -> List[dict]:
-    """Pobiera napisy przez YouTube Data API v3 (wymaga YOUTUBE_API_KEY)."""
-    import os, urllib.request, urllib.parse, json as _json, html, re as _re
+    """Pobiera napisy przez Innertube API (wewnętrzne API YouTube, bez logowania)."""
+    import json as _json, urllib.request, urllib.error, html, re as _re
 
     video_id = _extract_video_id(url)
     if not video_id:
         return []
 
-    api_key = os.getenv("YOUTUBE_API_KEY", "")
-    if not api_key:
-        logger.debug("Brak YOUTUBE_API_KEY — pomijam YT Data API")
-        return []
-
     try:
-        # Krok 1: pobierz listę dostępnych napisów
-        list_url = (
-            "https://www.googleapis.com/youtube/v3/captions"
-            f"?part=snippet&videoId={video_id}&key={api_key}"
-        )
-        with urllib.request.urlopen(list_url, timeout=10) as r:
-            data = _json.loads(r.read())
+        # Krok 1: pobierz player response przez Innertube
+        innertube_url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false"
+        payload = _json.dumps({
+            "videoId": video_id,
+            "context": {
+                "client": {
+                    "clientName": "ANDROID",
+                    "clientVersion": "19.09.37",
+                    "androidSdkVersion": 30,
+                    "hl": "pl",
+                    "gl": "PL",
+                }
+            }
+        }).encode()
 
-        captions = data.get("items", [])
-        if not captions:
-            logger.debug("Brak napisów w YT Data API dla %s", video_id)
+        req = urllib.request.Request(
+            innertube_url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11)",
+                "X-YouTube-Client-Name": "3",
+                "X-YouTube-Client-Version": "19.09.37",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            player = _json.loads(r.read())
+
+        # Krok 2: wyciągnij URL listy napisów (timedtext)
+        captions_data = (
+            player.get("captions", {})
+            .get("playerCaptionsTracklistRenderer", {})
+            .get("captionTracks", [])
+        )
+        if not captions_data:
+            logger.debug("Innertube: brak napisów dla %s", video_id)
             return []
 
-        # Wybierz pl → en → pierwsze dostępne
-        chosen = None
+        # Preferuj pl → en → pierwsze
+        track = None
         for lang in ("pl", "en"):
-            chosen = next((c for c in captions if c["snippet"]["language"] == lang), None)
-            if chosen:
+            track = next((t for t in captions_data if t.get("languageCode") == lang), None)
+            if track:
                 break
-        if not chosen:
-            chosen = captions[0]
+        if not track:
+            track = captions_data[0]
 
-        caption_id = chosen["id"]
+        base_url = track["baseUrl"]
+        # Pobierz w formacie XML (domyślny) i przekonwertuj
+        xml_url = base_url + "&fmt=srv3"
+        with urllib.request.urlopen(xml_url, timeout=15) as r:
+            xml_text = r.read().decode("utf-8", errors="replace")
 
-        # Krok 2: pobierz treść napisów (SRT)
-        dl_url = (
-            f"https://www.googleapis.com/youtube/v3/captions/{caption_id}"
-            f"?tfmt=srt&key={api_key}"
-        )
-        with urllib.request.urlopen(dl_url, timeout=15) as r:
-            srt_text = r.read().decode("utf-8", errors="replace")
-
-        return _parse_srt_text(srt_text)
+        return _parse_timedtext_xml(xml_text)
 
     except Exception as exc:
-        logger.debug("YT Data API błąd: %s", exc)
+        logger.debug("Innertube API błąd: %s", exc)
         return []
+
+
+def _parse_timedtext_xml(xml: str) -> List[dict]:
+    import re as _re, html
+    segs = []
+    seen = set()
+    for m in _re.finditer(r'<p\b[^>]*\bt="(\d+)"[^>]*\bd="(\d+)"[^>]*>(.*?)</p>', xml, _re.DOTALL):
+        start_ms = int(m.group(1))
+        dur_ms = int(m.group(2))
+        raw = m.group(3)
+        text = html.unescape(_re.sub(r"<[^>]+>", "", raw)).strip()
+        if text and text not in seen:
+            seen.add(text)
+            segs.append({
+                "start": start_ms / 1000,
+                "end": (start_ms + dur_ms) / 1000,
+                "text": text,
+            })
+    return segs
 
 
 def _parse_srt_text(srt: str) -> List[dict]:
