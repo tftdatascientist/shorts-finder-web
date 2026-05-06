@@ -54,48 +54,87 @@ def _extract_video_id(url: str) -> Optional[str]:
 
 
 def _try_yt_subtitles(url: str, work_dir: Path) -> List[dict]:
-    """Pobiera napisy przez youtube-transcript-api v1.x (nie wymaga logowania)."""
+    """Pobiera napisy przez YouTube Data API v3 (wymaga YOUTUBE_API_KEY)."""
+    import os, urllib.request, urllib.parse, json as _json, html, re as _re
+
+    video_id = _extract_video_id(url)
+    if not video_id:
+        return []
+
+    api_key = os.getenv("YOUTUBE_API_KEY", "")
+    if not api_key:
+        logger.debug("Brak YOUTUBE_API_KEY — pomijam YT Data API")
+        return []
+
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi
+        # Krok 1: pobierz listę dostępnych napisów
+        list_url = (
+            "https://www.googleapis.com/youtube/v3/captions"
+            f"?part=snippet&videoId={video_id}&key={api_key}"
+        )
+        with urllib.request.urlopen(list_url, timeout=10) as r:
+            data = _json.loads(r.read())
 
-        video_id = _extract_video_id(url)
-        if not video_id:
+        captions = data.get("items", [])
+        if not captions:
+            logger.debug("Brak napisów w YT Data API dla %s", video_id)
             return []
 
-        api = YouTubeTranscriptApi()
+        # Wybierz pl → en → pierwsze dostępne
+        chosen = None
+        for lang in ("pl", "en"):
+            chosen = next((c for c in captions if c["snippet"]["language"] == lang), None)
+            if chosen:
+                break
+        if not chosen:
+            chosen = captions[0]
 
-        # Próbuj kolejno: pl, en, cokolwiek dostępne
-        fetched = None
-        for lang in ("pl", "en", None):
-            try:
-                if lang:
-                    transcript_list = api.list(video_id)
-                    t = transcript_list.find_transcript([lang])
-                    fetched = t.fetch()
-                else:
-                    transcript_list = api.list(video_id)
-                    t = next(iter(transcript_list))
-                    fetched = t.fetch()
-                if fetched:
-                    break
-            except Exception:
-                continue
+        caption_id = chosen["id"]
 
-        if not fetched:
-            return []
+        # Krok 2: pobierz treść napisów (SRT)
+        dl_url = (
+            f"https://www.googleapis.com/youtube/v3/captions/{caption_id}"
+            f"?tfmt=srt&key={api_key}"
+        )
+        with urllib.request.urlopen(dl_url, timeout=15) as r:
+            srt_text = r.read().decode("utf-8", errors="replace")
 
-        segs = []
-        for snippet in fetched:
-            start = float(snippet.start)
-            duration = float(snippet.duration)
-            text = str(snippet.text).strip()
-            if text:
-                segs.append({"start": start, "end": start + duration, "text": text})
-        return segs
+        return _parse_srt_text(srt_text)
 
     except Exception as exc:
-        logger.debug("youtube-transcript-api błąd: %s", exc)
+        logger.debug("YT Data API błąd: %s", exc)
         return []
+
+
+def _parse_srt_text(srt: str) -> List[dict]:
+    import re as _re, html
+    segs = []
+    seen = set()
+    blocks = _re.split(r"\n\s*\n", srt.strip())
+    time_re = _re.compile(
+        r"(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})"
+    )
+    for block in blocks:
+        lines = block.strip().splitlines()
+        m = None
+        text_lines = []
+        for line in lines:
+            if m is None:
+                m = time_re.match(line.strip())
+            elif not line.strip().isdigit():
+                text_lines.append(line.strip())
+        if not m or not text_lines:
+            continue
+        h1, m1, s1, ms1 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        h2, m2, s2, ms2 = int(m.group(5)), int(m.group(6)), int(m.group(7)), int(m.group(8))
+        start = h1 * 3600 + m1 * 60 + s1 + ms1 / 1000
+        end = h2 * 3600 + m2 * 60 + s2 + ms2 / 1000
+        text = html.unescape(" ".join(text_lines)).strip()
+        text = _re.sub(r"<[^>]+>", "", text).strip()
+        if text and text not in seen and end > start:
+            seen.add(text)
+            segs.append({"start": start, "end": end, "text": text})
+    return segs
 
 
 def _parse_vtt(path: Path) -> List[dict]:

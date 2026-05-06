@@ -51,16 +51,11 @@ class AnalyzeResponse(BaseModel):
 
 @app.get("/health")
 async def health():
-    try:
-        from youtube_transcript_api import YouTubeTranscriptApi
-        transcript_backend = "youtube-transcript-api"
-    except ImportError:
-        transcript_backend = "yt-dlp"
     return {
         "status": "ok",
         "openai_configured": bool(OPENAI_API_KEY),
-        "transcript_backend": transcript_backend,
-        "version": "2",
+        "youtube_api_configured": bool(os.getenv("YOUTUBE_API_KEY")),
+        "version": "3",
     }
 
 
