@@ -54,44 +54,47 @@ def _extract_video_id(url: str) -> Optional[str]:
 
 
 def _try_yt_subtitles(url: str, work_dir: Path) -> List[dict]:
-    """Pobiera napisy przez youtube-transcript-api (nie wymaga logowania)."""
+    """Pobiera napisy przez youtube-transcript-api v1.x (nie wymaga logowania)."""
     try:
-        from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
+        from youtube_transcript_api import YouTubeTranscriptApi
 
         video_id = _extract_video_id(url)
         if not video_id:
             return []
 
+        api = YouTubeTranscriptApi()
+
         # Próbuj kolejno: pl, en, cokolwiek dostępne
-        transcript = None
-        for lang in (["pl"], ["en"], None):
+        fetched = None
+        for lang in ("pl", "en", None):
             try:
                 if lang:
-                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=lang)
+                    transcript_list = api.list(video_id)
+                    t = transcript_list.find_transcript([lang])
+                    fetched = t.fetch()
                 else:
-                    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-                    t = next(iter(transcript_list), None)
-                    if t:
-                        transcript = t.fetch()
-                if transcript:
+                    transcript_list = api.list(video_id)
+                    t = next(iter(transcript_list))
+                    fetched = t.fetch()
+                if fetched:
                     break
             except Exception:
                 continue
 
-        if not transcript:
+        if not fetched:
             return []
 
         segs = []
-        for item in transcript:
-            start = float(item.get("start", 0))
-            duration = float(item.get("duration", 1))
-            text = str(item.get("text", "")).strip()
+        for snippet in fetched:
+            start = float(snippet.start)
+            duration = float(snippet.duration)
+            text = str(snippet.text).strip()
             if text:
                 segs.append({"start": start, "end": start + duration, "text": text})
         return segs
 
     except Exception as exc:
-        logger.debug("youtube-transcript-api niedostępne: %s", exc)
+        logger.debug("youtube-transcript-api błąd: %s", exc)
         return []
 
 
