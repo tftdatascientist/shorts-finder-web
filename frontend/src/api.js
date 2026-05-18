@@ -1,16 +1,30 @@
 const BASE = import.meta.env.VITE_API_URL || ''
 
-export async function startAnalysis(url) {
-  const res = await fetch(`${BASE}/analyze`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url }),
-  })
-  if (!res.ok) {
+const WAKE_UP_STATUSES = new Set([503, 502, 504])
+const RETRY_DELAY_MS = 8000
+const MAX_RETRIES = 5
+
+export async function startAnalysis(url, onWakingUp) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch(`${BASE}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+
+    if (res.ok) return res.json() // { session_id }
+
+    if (WAKE_UP_STATUSES.has(res.status) && attempt < MAX_RETRIES) {
+      const eta = Math.round((RETRY_DELAY_MS * (MAX_RETRIES - attempt)) / 1000)
+      onWakingUp?.(`Serwer się wybudza… (próba ${attempt + 1}/${MAX_RETRIES}, ~${eta}s)`)
+      await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
+      continue
+    }
+
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || `Błąd serwera ${res.status}`)
   }
-  return res.json() // { session_id }
+  throw new Error('Serwer nie odpowiada — spróbuj za chwilę.')
 }
 
 export async function fetchResults(sessionId) {

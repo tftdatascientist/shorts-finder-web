@@ -14,6 +14,7 @@ function stepIndex(status) {
 export default function ProgressStream({ status, message }) {
   const currentIdx = stepIndex(status)
   const isError = status === 'error'
+  const isWakingUp = status === 'waking_up'
 
   return (
     <div className="bg-card border border-border rounded-lg p-5 flex flex-col gap-4">
@@ -46,10 +47,11 @@ export default function ProgressStream({ status, message }) {
       </div>
 
       {/* Komunikat bieżący */}
-      <div className={`flex items-center gap-2 text-sm ${isError ? 'text-red-400' : 'text-subtle'}`}>
-        {!isError && status !== 'done' && (
+      <div className={`flex items-center gap-2 text-sm ${isError ? 'text-red-400' : isWakingUp ? 'text-yellow-400' : 'text-subtle'}`}>
+        {!isError && !isWakingUp && status !== 'done' && (
           <span className="pulse-dot text-primary">●</span>
         )}
+        {isWakingUp && <span className="pulse-dot text-yellow-400">●</span>}
         {isError && <span>✗</span>}
         {status === 'done' && <span className="text-success">✓</span>}
         <span>{message}</span>

@@ -31,7 +31,9 @@ export default function App() {
     setStreamStatus({ status: 'pending', message: 'Uruchamiam analizę…' })
 
     try {
-      const { session_id } = await startAnalysis(url)
+      const { session_id } = await startAnalysis(url, (msg) => {
+        setStreamStatus({ status: 'waking_up', message: msg })
+      })
       setState(STATE.STREAMING)
 
       const closeStream = openStream(
