@@ -58,7 +58,7 @@ async def health():
         "status": "ok",
         "openai_configured": bool(OPENAI_API_KEY),
         "youtube_api_configured": bool(os.getenv("YOUTUBE_API_KEY")),
-        "version": "5",
+        "version": "6",
     }
 
 

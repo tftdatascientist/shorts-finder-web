@@ -94,7 +94,8 @@ def _try_pytubefix_captions(url: str, progress: Optional[ProgressFn] = None) -> 
                     logger.info("pytubefix captions OK (client=%s): %d segmentów", client, len(segs))
                     return segs
             except Exception as exc:
-                logger.debug("pytubefix captions (client=%s) błąd: %s", client, exc)
+                logger.warning("pytubefix captions (client=%s) błąd: %s", client, exc)
+                _emit(progress, f"pytubefix captions ({client}) błąd: {exc}")
                 continue
     except Exception as exc:
         logger.debug("pytubefix captions błąd: %s", exc)
@@ -117,20 +118,23 @@ def _try_whisper_pytubefix(
     except ImportError:
         return []
 
+    dl_path = None
     for client in ("ANDROID", "IOS", "TVHTML5"):
         try:
             _emit(progress, f"Pobieram audio przez pytubefix ({client})…")
             yt = YouTube(url, client=client)
             stream = yt.streams.filter(only_audio=True).order_by("abr").last()
             if not stream:
+                _emit(progress, f"pytubefix ({client}): brak streamu audio")
                 continue
             dl_path = Path(stream.download(output_path=str(work_dir), filename=f"pyfix_src_{client}"))
             break
         except Exception as exc:
-            logger.debug("pytubefix audio (client=%s) błąd: %s", client, exc)
+            logger.warning("pytubefix audio (client=%s) błąd: %s", client, exc)
+            _emit(progress, f"pytubefix ({client}) błąd: {exc}")
             dl_path = None
             continue
-    else:
+    if not dl_path:
         return []
 
     if not dl_path or not dl_path.exists():
