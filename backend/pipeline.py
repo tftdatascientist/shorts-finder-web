@@ -53,7 +53,9 @@ async def run_pipeline(session_id: str, openai_api_key: str) -> None:
         )
 
         if not segments:
-            _update(analysis, AnalysisStatus.error, "Nie udało się uzyskać transkrypcji — film może nie mieć napisów YT, a klucz OpenAI nie jest skonfigurowany.")
+            msg = "Nie udało się uzyskać transkrypcji. Film może nie mieć napisów YT lub są zablokowane na serwerze."
+            analysis.error_msg = msg
+            _update(analysis, AnalysisStatus.error, msg)
             return
 
         _update(analysis, AnalysisStatus.transcribing, f"Transkrypcja gotowa: {len(segments)} segmentów")

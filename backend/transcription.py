@@ -21,10 +21,20 @@ def fetch_transcript(
 ) -> List[dict]:
     """Zwraca listę segmentów [{"start": float, "end": float, "text": str}].
 
-    Kaskada: YT napisy → Whisper API.
-    W wersji web pomijamy embedded subs i Claude CLI (nie ma lokalnych plików wideo).
+    Kaskada:
+      1. pytubefix captions (oficjalne napisy YT, omija blokady DC)
+      2. youtube-transcript-api (działa lokalnie)
+      3. Innertube API (wewnętrzne YT)
+      4. Whisper API przez pytubefix audio (zamiast yt-dlp)
+      5. Whisper API przez yt-dlp (ostatnia deska ratunku)
     """
     _emit(progress, "Szukam napisów YouTube…")
+
+    segs = _try_pytubefix_captions(url, progress)
+    if segs:
+        _emit(progress, f"Napisy YT (pytubefix): {len(segs)} segmentów")
+        return segs
+
     segs = _try_yt_subtitles(url, work_dir)
     if segs:
         _emit(progress, f"Napisy YT: {len(segs)} segmentów")
@@ -32,6 +42,10 @@ def fetch_transcript(
 
     if openai_api_key:
         _emit(progress, "Brak napisów YT — pobieram audio do Whisper…")
+        segs = _try_whisper_pytubefix(url, work_dir, openai_api_key, progress)
+        if segs:
+            _emit(progress, f"Whisper API (pytubefix): {len(segs)} segmentów")
+            return segs
         segs = _try_whisper(url, work_dir, openai_api_key, progress)
         if segs:
             _emit(progress, f"Whisper API: {len(segs)} segmentów")
@@ -51,6 +65,96 @@ def _extract_video_id(url: str) -> Optional[str]:
         if m:
             return m.group(1)
     return None
+
+
+def _try_pytubefix_captions(url: str, progress: Optional[ProgressFn] = None) -> List[dict]:
+    """Pobiera napisy przez pytubefix — omija blokady DC bo używa oficjalnego playback API."""
+    try:
+        from pytubefix import YouTube
+        from pytubefix.captions import Caption
+        _emit(progress, "Próbuję napisy przez pytubefix…")
+        yt = YouTube(url)
+        captions = yt.captions
+        if not captions:
+            return []
+        # Preferuj pl → en → auto-generated en → pierwsze dostępne
+        cap: Optional[Caption] = None
+        for code in ("pl", "en", "a.pl", "a.en"):
+            cap = captions.get(code)
+            if cap:
+                break
+        if not cap:
+            cap = next(iter(captions.values()), None)
+        if not cap:
+            return []
+        srt = cap.generate_srt_captions()
+        segs = _parse_srt_text(srt)
+        return segs
+    except Exception as exc:
+        logger.debug("pytubefix captions błąd: %s", exc)
+        return []
+
+
+def _try_whisper_pytubefix(
+    url: str,
+    work_dir: Path,
+    api_key: str,
+    progress: Optional[ProgressFn],
+) -> List[dict]:
+    """Pobiera audio przez pytubefix zamiast yt-dlp, następnie transkrybuje Whisperem."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return []
+    try:
+        from openai import OpenAI
+        from pytubefix import YouTube
+    except ImportError:
+        return []
+
+    try:
+        _emit(progress, "Pobieram audio przez pytubefix…")
+        yt = YouTube(url)
+        stream = yt.streams.filter(only_audio=True).order_by("abr").last()
+        if not stream:
+            return []
+        dl_path = Path(stream.download(output_path=str(work_dir), filename="pyfix_src"))
+
+        audio_path = work_dir / "whisper_pf.mp3"
+        result = subprocess.run(
+            [ffmpeg, "-y", "-i", str(dl_path),
+             "-vn", "-ar", "16000", "-ac", "1", "-b:a", "32k",
+             str(audio_path), "-loglevel", "error"],
+            capture_output=True, timeout=120,
+        )
+        dl_path.unlink(missing_ok=True)
+        if result.returncode != 0 or not audio_path.exists():
+            return []
+
+        _emit(progress, "Wysyłam do OpenAI Whisper API…")
+        client = OpenAI(api_key=api_key)
+        with audio_path.open("rb") as f:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                response_format="verbose_json",
+                timestamp_granularities=["segment"],
+            )
+        segs = []
+        for s in (getattr(response, "segments", None) or []):
+            start = float(getattr(s, "start", 0))
+            end = float(getattr(s, "end", start + 1))
+            text = str(getattr(s, "text", "")).strip()
+            if text and end > start:
+                segs.append({"start": start, "end": end, "text": text})
+        return segs
+    except Exception as exc:
+        logger.warning("Whisper/pytubefix błąd: %s", exc)
+        return []
+    finally:
+        for f in work_dir.glob("whisper_pf*"):
+            f.unlink(missing_ok=True)
+        for f in work_dir.glob("pyfix_src*"):
+            f.unlink(missing_ok=True)
 
 
 def _try_yt_subtitles(url: str, work_dir: Path) -> List[dict]:
