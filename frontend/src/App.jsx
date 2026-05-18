@@ -85,6 +85,9 @@ export default function App() {
         <div className="w-2 h-6 bg-primary rounded-full" />
         <h1 className="text-white font-bold text-lg tracking-tight">Shorts Finder</h1>
         <span className="text-subtle text-sm">@AUTOmatyczni</span>
+        <span className="ml-auto text-xs text-muted opacity-50" title="Data wdrożenia tej wersji">
+          v {new Date(__BUILD_TIME__).toLocaleString('pl-PL', { dateStyle: 'short', timeStyle: 'short' })}
+        </span>
       </header>
 
       <main className="max-w-3xl mx-auto px-4 py-8 flex flex-col gap-6">
