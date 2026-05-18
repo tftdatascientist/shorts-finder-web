@@ -68,31 +68,37 @@ def _extract_video_id(url: str) -> Optional[str]:
 
 
 def _try_pytubefix_captions(url: str, progress: Optional[ProgressFn] = None) -> List[dict]:
-    """Pobiera napisy przez pytubefix — omija blokady DC bo używa oficjalnego playback API."""
+    """Pobiera napisy przez pytubefix z klientem ANDROID — omija blokady IP data center."""
     try:
         from pytubefix import YouTube
-        from pytubefix.captions import Caption
         _emit(progress, "Próbuję napisy przez pytubefix…")
-        yt = YouTube(url)
-        captions = yt.captions
-        if not captions:
-            return []
-        # Preferuj pl → en → auto-generated en → pierwsze dostępne
-        cap: Optional[Caption] = None
-        for code in ("pl", "en", "a.pl", "a.en"):
-            cap = captions.get(code)
-            if cap:
-                break
-        if not cap:
-            cap = next(iter(captions.values()), None)
-        if not cap:
-            return []
-        srt = cap.generate_srt_captions()
-        segs = _parse_srt_text(srt)
-        return segs
+        # Klient ANDROID nie wymaga weryfikacji bota (inaczej niż WEB)
+        for client in ("ANDROID", "IOS", "TVHTML5"):
+            try:
+                yt = YouTube(url, client=client)
+                captions = yt.captions
+                if not captions:
+                    continue
+                cap = None
+                for code in ("pl", "en", "a.pl", "a.en"):
+                    cap = captions.get(code)
+                    if cap:
+                        break
+                if not cap:
+                    cap = next(iter(captions.values()), None)
+                if not cap:
+                    continue
+                srt = cap.generate_srt_captions()
+                segs = _parse_srt_text(srt)
+                if segs:
+                    logger.info("pytubefix captions OK (client=%s): %d segmentów", client, len(segs))
+                    return segs
+            except Exception as exc:
+                logger.debug("pytubefix captions (client=%s) błąd: %s", client, exc)
+                continue
     except Exception as exc:
         logger.debug("pytubefix captions błąd: %s", exc)
-        return []
+    return []
 
 
 def _try_whisper_pytubefix(
@@ -101,7 +107,7 @@ def _try_whisper_pytubefix(
     api_key: str,
     progress: Optional[ProgressFn],
 ) -> List[dict]:
-    """Pobiera audio przez pytubefix zamiast yt-dlp, następnie transkrybuje Whisperem."""
+    """Pobiera audio przez pytubefix (klient ANDROID/IOS) — omija blokady DC."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         return []
@@ -111,14 +117,26 @@ def _try_whisper_pytubefix(
     except ImportError:
         return []
 
-    try:
-        _emit(progress, "Pobieram audio przez pytubefix…")
-        yt = YouTube(url)
-        stream = yt.streams.filter(only_audio=True).order_by("abr").last()
-        if not stream:
-            return []
-        dl_path = Path(stream.download(output_path=str(work_dir), filename="pyfix_src"))
+    for client in ("ANDROID", "IOS", "TVHTML5"):
+        try:
+            _emit(progress, f"Pobieram audio przez pytubefix ({client})…")
+            yt = YouTube(url, client=client)
+            stream = yt.streams.filter(only_audio=True).order_by("abr").last()
+            if not stream:
+                continue
+            dl_path = Path(stream.download(output_path=str(work_dir), filename=f"pyfix_src_{client}"))
+            break
+        except Exception as exc:
+            logger.debug("pytubefix audio (client=%s) błąd: %s", client, exc)
+            dl_path = None
+            continue
+    else:
+        return []
 
+    if not dl_path or not dl_path.exists():
+        return []
+
+    try:
         audio_path = work_dir / "whisper_pf.mp3"
         result = subprocess.run(
             [ffmpeg, "-y", "-i", str(dl_path),
